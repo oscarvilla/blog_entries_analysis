@@ -1,8 +1,9 @@
 library(here)
 library(tidyverse)
+library(lubridate)
 
 # Importamos el set de datos que ya contiene los sentimientos de cada texto calculados con NLTK
-df <- read_csv("~/Documents/NLP-Python/blog_entries_analysis/data/blogtext_sent.csv")
+df <- read_csv(here::here("data", "blogtext_sent.csv"))
 
 # Damos un vistazo a las variables
 glimpse(df)
@@ -15,18 +16,33 @@ df
 # - topic
 # - sign
 # - factor
-
 df <- df %>% 
   mutate(gender = gender %>% factor(), 
          topic = topic %>% factor(), 
          sign = sign %>% factor(), 
          id = id %>% factor())
 
-# Chequeamos que no hay errores en los factores (categorías erroneas)
+# Chequeamos que no haya errores en los factores (categorías erroneas)
+# Géneros
 levels(df$gender)
+# Tópicos
 levels(df$topic)
+# Signos del zodiaco
 levels(df$sign)
-levels(df$id)
+# qué tantos id's o bloggers únicos tenemos
+length(levels(df$id))
+# Qué tanto escribe cada uno de ellos
+df %>% 
+  group_by(id) %>% 
+  count(id) %>% 
+  ggplot(aes(n)) +
+  geom_density() +
+  ggtitle("distribución de blogs por escritor", 
+          subtitle = "qué tantos escriben un cierto número de entradas") +
+  xlab("número de entradas de blog") + 
+  ylab("frecuencia")
+
+# lo más probable es que un autor hay escrito menos de 50 entradas
 
 # Revisemos la distribución de los sentimientos
 # por género
@@ -51,9 +67,7 @@ df %>%
 
 # No se encuentran tendencias notorias. Una ligera tendencia de los cancer a ser los más neutrales
 
-# Vamos a revisar por edades. Pero antes debemos discretizar la variable: de edades como valores 
-# contínuos pasamos a 5 intervalos
-# Veamos cómo están distribuidas las edades
+# Vamos a revisar por edades.
 df %>% 
   group_by(id) %>% 
   ggplot(aes(age, fill = ..count..)) +
@@ -93,39 +107,113 @@ df %>%
 # Para poder llevar a cabo el análisis a través de tiempo, necesitamos mejorar las fechas
 # Como tenemos el problema de meses escritos en otros idiomas, vamos a tener que mapearlos antes; 
 # reemplazando a cada mes en otro idioma por su escritura en inglés, y llevando todo a minúscula.
-df_split <- df %>% 
+df <- df %>% 
   separate(date, c("day", "month", "year"), sep = ",") %>% 
-  mutate(month = month %>% factor())
+  mutate(month = month %>% str_to_lower() %>% factor())
 
-summary(df_split$month)
+summary(df$month)
 
-# Como no cuento con el tiempo para esto, voy a sacrificar el análisis de las series de tiempo
-# y me voy a quedar tan sólo con el análisis de tendencias anuales.
-# Retiramos aquellas entradas de blog sin fecha y el año 2006, por tener una muestra muy pequeña
-# (quizá incompleta).
+# Tenemos que traducir los meses a inglés: todos.
 
-# Tenemos una dificultad con el número de blogs por año
+df <- df %>% 
+  mutate(month = case_when(
+    month %in% c("januar", "janvier", "ianuarie", "jaanuar", "enero", "janeiro") ~ "january",
+    month %in% c("februar", "febrero", "februarie", "fevereiro") ~ "february",
+    month %in% c("mars", "marzo", "maart") ~ "march", 
+    month %in% c("abril", "avril", "aprill") ~ "april",
+    month %in% c("mai", "mayo", "mei", "maj", "maio", "toukokuu") ~ "may", 
+    month %in% c("juin", "junho", "junio", "juni", "giugno", "juuni", "czerwiec", "lipanj") ~ "june", 
+    month %in% c("juillet", "julho", "juli", "luglio", "iulie", "juuli", "lipiec", "julio") ~ "july", 
+    month %in% c("agosto", "augusti", "augustus", "avgust", "kolovoz", "elokuu") ~ "august",
+    month %in% c("septembre", "septembrie", "setembro", "septiembre") ~ "september",
+    month %in% c("octubre", "octobre", "ottobre", "outubro") ~ "october", 
+    month %in% c("novembre", "noiembrie", "novembro", "noviembre") ~ "november", 
+    month %in% c("dezember", "diciembre", "dezembro", "desember") ~ "december", 
+    TRUE ~ as.character(month)
+  ) %>% factor()) 
+
+# Verificamos que queden todos los meses en inglés
+unique(df$month)
+
+df <- df %>% 
+  mutate(day = day %>% as.character(), 
+         year = year %>% as.character()) %>% 
+  unite("date", c("day", "month", "year"), sep = "-") %>% 
+  mutate(date = date %>% lubridate::dmy())
+
+# Hay un warning de fechas con fallos
 df %>% 
-  separate(date, c("day", "month", "year"), sep = ",") %>% 
-  filter(year != "", year != 2006) %>% 
-  group_by(year) %>%
-  count(year) %>% 
-  ggplot(aes(year, n, fill = n)) +
-  geom_bar(stat = "identity") + 
-  ggtitle("Blogs por año", subtitle = "removidos sin fecha y 2006") + 
-  xlab("años") +
-  ylab("cuenta")
+  filter(is.na(date))
 
-# Esto a lo mejor confirma lo planteado por la ley de Moore. En todo caso, cada vez hay más entradas 
-# de blog
+# Para los análisis de series de tiempo debemos prescindir de ellos o imputar las fechas.
+# Voy a prescindir por lo poco que aporta a la muestra (24 / 681284)
+df_clean <- df %>% 
+  filter(!is.na(date))
 
-# A pesar de ello, revisemos cómo se varían los sentimientos expresados en los blogs
-df %>% 
-  separate(date, c("day", "month", "year"), sep = ",") %>% 
-  filter(year != "", year != 2006) %>% 
-  group_by(year) %>%
-  mutate(n = n()) %>% 
-  ggplot(aes(year, compound, colour = n)) + 
-  geom_violin()
+# Revisamos la serie de tiempo más básica
+df_clean %>% 
+  group_by(date) %>% 
+  summarise(sent = mean(compound))
 
-# 
+# De inmediato es notorio que faltan días. Vamos a completarlos
+df_clean %>% 
+  mutate(date = as.Date(date)) %>% 
+  complete(date = seq.Date(min(df_clean$date), max(df_clean$date), by = "day")) %>% 
+  group_by(date) %>% 
+  summarise(sentiment = mean(compound)) %>% 
+  fill(sentiment) %>% 
+  ggplot(aes(date, sentiment)) +
+  geom_line()
+
+# Definitivamente después de 2005 los registros están muy poco frecuentes.
+# Dado que la tendencia era de crecimiento; puede tratarse de un problema.
+df_clean %>% 
+  group_by(year(date), month(date)) %>% 
+  unite("periodo", c(`year(date)`, `month(date)`)) %>% 
+  group_by(periodo) %>% 
+  count() %>% 
+  ggplot(aes(periodo, n)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Blogs por mes") +
+  coord_flip()
+
+# Lo mejor es mantener la muestra hasta 2003-12, para cerrar por año hasta donde la muestra sea completa
+df_sub_2004 <- df_clean %>% 
+  filter(year(date) < 2004)
+
+# Pasamos de 681260 a 681231: perdimos 29 registros por un año.
+df_sub_2004 %>% 
+  group_by(date) %>% 
+  summarise(sent = mean(compound)) %>% 
+  ggplot(aes(date, sent, colour = sent)) +
+  geom_point() +
+  geom_line()
+
+# Si bien al principio puede pensarse que hay una estabilización o neutralización debida al tiempo,
+# de lo que realmente se trata es de la regresión a la media y teorema del límite central, dado que
+# estoy obteniendo el promedio de los sentimientos para cada día: mientras mayor sea el número de 
+# entradas de blog, más tenderá el promedio hacia un punto y habrá menos varianza.
+
+# Vamos a tomarlo por grupos
+df_sub_2004 %>% 
+  ggplot(aes(date, compound, colour = gender)) + 
+  geom_point()
+
+df_sub_2004 %>% 
+  ggplot(aes(date, compound, colour = sign)) + 
+  geom_point()
+
+df_sub_2004 %>% 
+  ggplot(aes(date, compound, colour = topic)) + 
+  geom_point()
+
+# Time series
+df_sub_2004 %>%
+  group_by(gender, date) %>% 
+  summarise(sent = mean(compound)) %>% 
+  ggplot(aes(date, sent)) + 
+  geom_line() +
+  facet_grid(~gender) +
+  ggtitle("Serie de tiempo por género") + 
+  xlab("año") + 
+  ylab("polaridad")
